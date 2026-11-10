@@ -21,6 +21,13 @@ if errorlevel 1 (
     copy /y requirements.txt .venv\requirements.installed >nul
 )
 
+rem MetaTrader5 is optional (Windows only). Try once; Yahoo is used if it will not install.
+if not exist ".venv\mt5.tried" (
+    echo Installing MetaTrader5 package, optional...
+    ".venv\Scripts\python.exe" -m pip install -q MetaTrader5 || echo MetaTrader5 package not available - Yahoo data will be used.
+    echo tried> .venv\mt5.tried
+)
+
 ".venv\Scripts\python.exe" cli.py %*
 set "RC=%ERRORLEVEL%"
 

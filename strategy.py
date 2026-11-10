@@ -17,13 +17,14 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from typing import Literal
 
 Direction = Literal["bull", "bear", "neutral"]
 Side = Literal["UP", "DOWN"]
 Kind = Literal["INSIDE", "CIB"]
+Level = Literal["HIGH", "LOW"]
 
 
 @dataclass(frozen=True)
@@ -68,6 +69,29 @@ class Signal:
         if prev_range <= 0:
             return 0.0
         return (self.bar.high - self.bar.low) / prev_range
+
+
+@dataclass(frozen=True)
+class LevelBreak:
+    """Today's price has traded beyond the previous day's high or low."""
+
+    pair: str
+    level: Level
+    level_price: float
+    extreme: float  # today's highest high (HIGH) or lowest low (LOW) so far
+    confirmed: bool = True  # a candle CLOSED beyond the level (True when not checking closes)
+    confirmed_close: float | None = None  # the furthest such close
+
+    @property
+    def distance(self) -> float:
+        return abs(self.extreme - self.level_price)
+
+    @property
+    def close_distance(self) -> float:
+        """How far the confirming close finished beyond the level (0 if unconfirmed)."""
+        if self.confirmed_close is None:
+            return 0.0
+        return abs(self.confirmed_close - self.level_price)
 
 
 def candle_direction(open_: float, close: float) -> Direction:
@@ -142,3 +166,42 @@ def _check_buffer(buffer: float) -> None:
     if buffer < 0 or not math.isfinite(buffer):
         msg = f"buffer must be a finite number >= 0, got {buffer!r}"
         raise ValueError(msg)
+
+
+def detect_breaks(
+    pair: str,
+    prev_high: float,
+    prev_low: float,
+    session_high: float,
+    session_low: float,
+    *,
+    buffer: float = 0.0,
+) -> list[LevelBreak]:
+    """Levels of the previous day that the current session has traded beyond.
+
+    A touch is not a break: price must exceed the level by more than ``buffer``.
+    Both sides are reported when today has taken out the high *and* the low.
+    """
+    _check_buffer(buffer)
+    found: list[LevelBreak] = []
+    if session_high > prev_high + buffer:
+        found.append(LevelBreak(pair, "HIGH", prev_high, session_high))
+    if session_low < prev_low - buffer:
+        found.append(LevelBreak(pair, "LOW", prev_low, session_low))
+    return found
+
+
+def confirm_break(brk: LevelBreak, closes: Sequence[float], buffer: float = 0.0) -> LevelBreak:
+    """Mark a touched level as confirmed if any completed candle closed beyond it.
+
+    ``closes`` are the closes of today's completed candles on the chosen timeframe.
+    Closing exactly on the level (or within ``buffer`` of it) does not count.
+    """
+    _check_buffer(buffer)
+    if brk.level == "HIGH":
+        beyond = [c for c in closes if c > brk.level_price + buffer]
+        furthest = max(beyond) if beyond else None
+    else:
+        beyond = [c for c in closes if c < brk.level_price - buffer]
+        furthest = min(beyond) if beyond else None
+    return replace(brk, confirmed=furthest is not None, confirmed_close=furthest)

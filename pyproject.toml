@@ -17,17 +17,18 @@ select = ["E", "F", "W", "I", "N", "UP", "B", "SIM", "C4", "RUF", "PT", "PL", "T
 ignore = ["PLR0913", "PLR2004"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["cache", "config", "data", "strategy", "cli"]
+known-first-party = ["cache", "config", "data", "strategy", "cli", "notify", "mt5feed"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["ARG001", "ARG002", "ARG004", "ARG005", "PLC0415", "PT011", "RUF012"]
 "data.py" = ["PLC0415"]
+"notify.py" = ["PLC0415"]
 
 [tool.mypy]
 python_version = "3.10"
 strict = true
-files = ["config.py", "cache.py", "data.py", "strategy.py", "cli.py"]
+files = ["config.py", "cache.py", "data.py", "strategy.py", "cli.py", "notify.py", "mt5feed.py"]
 
 [[tool.mypy.overrides]]
-module = ["yfinance", "yfinance.*"]
+module = ["yfinance", "yfinance.*", "winotify", "winotify.*"]
 ignore_missing_imports = true

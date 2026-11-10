@@ -9,6 +9,7 @@ from rich.console import Console
 
 import cli
 import config
+import strategy
 from strategy import Bar, Signal
 from tests.conftest import WED, weekdays_ending
 
@@ -81,8 +82,8 @@ class TestMain:
         assert "GBP/USD" not in inside_part
         assert "GBP/USD" in cib_part
         assert "USD/JPY" in cib_part
-        assert "ABOVE HIGH" in cib_part
-        assert "BELOW LOW" in cib_part
+        assert "+300.0" in cib_part  # GBP/USD closed 300 pips above the high
+        assert "-4.0" in cib_part  # USD/JPY closed 4 pips below the low
 
     def test_empty_state(self, tmp_path: Path) -> None:
         code, text = self._run(tmp_path, _fetcher_factory({}), "EURUSD")
@@ -93,9 +94,9 @@ class TestMain:
         # Closes 0.5 pip above prior high; a 2-pip buffer should remove it.
         fetcher = _fetcher_factory({"EURUSD": (1.06, 1.12, 1.05, 1.10005)})
         _, with_zero = self._run(tmp_path, fetcher, "EURUSD")
-        assert "ABOVE HIGH" in with_zero
+        assert "+0.5" in with_zero
         _, with_buffer = self._run(tmp_path, fetcher, "EURUSD", "--buffer-pips", "2", "--refresh")
-        assert "ABOVE HIGH" not in with_buffer
+        assert "+0.5" not in with_buffer
 
     def test_all_failures_exit_code_one(self, tmp_path: Path) -> None:
         def boom(pair: str) -> pd.DataFrame:
@@ -163,20 +164,85 @@ class TestLatestClosedDayFilter:
 
 
 class TestWatchList:
-    def test_groups_make_up_18_unique_pairs(self) -> None:
-        assert len(config.PAIRS) == 18
-        assert len(set(config.PAIRS)) == 18
+    def test_groups_make_up_16_unique_pairs(self) -> None:
+        assert len(config.PAIRS) == 16
+        assert len(set(config.PAIRS)) == 16
 
-    def test_only_majors_yen_and_eur_crosses(self) -> None:
+    def test_group_contents(self) -> None:
         assert len(config.MAJORS) == 7
         for pair in config.YEN_CROSSES:
             assert pair.endswith("JPY")
             assert "USD" not in pair
-        for pair in config.EUR_CROSSES:
-            assert pair.startswith("EUR")
-            assert "USD" not in pair
-            assert not pair.endswith("JPY")
+        european = {"EUR", "GBP", "CHF"}
+        for pair in config.EUROPEAN_CROSSES:
+            assert {pair[:3], pair[3:]} <= european
 
     def test_dropped_crosses_are_gone(self) -> None:
-        for pair in ("GBPAUD", "GBPCHF"):
+        for pair in ("EURAUD", "EURCAD", "EURNZD", "GBPAUD"):
             assert pair not in config.PAIRS
+
+
+class TestGroupSeparation:
+    @staticmethod
+    def _text(tmp_path: Path, *args: str, last: dict | None = None) -> str:  # type: ignore[type-arg]
+        console = Console(record=True, width=130, force_terminal=False)
+        cli.main(
+            [*args, "--db", str(tmp_path / "c.sqlite")],
+            fetcher=_fetcher_factory(last or {}),
+            console=console,
+            now=WED,
+        )
+        return console.export_text()
+
+    def test_majors_and_crosses_are_separate_sections(self, tmp_path: Path) -> None:
+        inside = (1.04, 1.09, 1.01, 1.06)
+        text = self._text(tmp_path, "EURUSD", "EURJPY", last={"EURUSD": inside, "EURJPY": inside})
+        majors_part, crosses_part = text.split("YEN & EUROPEAN CROSSES")
+        assert "MAJORS" in majors_part
+        assert "EUR/USD" in majors_part
+        assert "EUR/JPY" not in majors_part
+        assert "EUR/JPY" in crosses_part
+        assert "EUR/USD" not in crosses_part
+
+    def test_group_not_scanned_is_not_shown(self, tmp_path: Path) -> None:
+        text = self._text(tmp_path, "EURUSD")
+        assert "MAJORS" in text
+        assert "YEN & EUROPEAN CROSSES" not in text
+
+    def test_group_flag_selects_pairs(self) -> None:
+        assert cli.parse_pairs(None, "majors") == list(config.MAJORS)
+        assert cli.parse_pairs(None, "crosses") == list(config.CROSSES)
+        assert len(config.CROSSES) == 9
+
+    def test_explicit_pairs_beat_group(self) -> None:
+        assert cli.parse_pairs(["EURJPY"], "majors") == ["EURJPY"]
+
+    def test_groups_cover_the_watch_list_exactly(self) -> None:
+        grouped = [pair for _, members in config.GROUPS for pair in members]
+        assert sorted(grouped) == sorted(config.PAIRS)
+
+
+class TestCompactTables:
+    def test_removed_columns_are_gone(self) -> None:
+        console = Console(record=True, width=130, force_terminal=False)
+        console.print(cli.build_inside_table([_signal("INSIDE", "bull")]))
+        console.print(cli.build_cib_table([_signal("CIB", "bull", "UP")]))
+        text = console.export_text()
+        for gone in ("Close", "Prev High", "Prev Low", "Break "):
+            assert gone not in text
+
+    def test_inside_table_columns(self) -> None:
+        table = cli.build_inside_table([])
+        assert [c.header for c in table.columns] == ["Pair", "Date", "Candle", "Range %", "Broke"]
+
+    def test_cib_table_columns_and_signed_pips(self) -> None:
+        prev = Bar(date(2026, 3, 2), 1.0, 1.10, 1.00, 1.05)
+        up_bar = Bar(date(2026, 3, 3), 1.06, 1.14, 1.05, 1.13)  # closes above 1.10
+        down_bar = Bar(date(2026, 3, 3), 1.04, 1.05, 0.95, 0.97)  # closes below 1.00
+        up = strategy.evaluate("EURUSD", [prev, up_bar])
+        down = strategy.evaluate("GBPUSD", [prev, down_bar])
+        assert up is not None
+        assert down is not None
+        table = cli.build_cib_table([up, down])
+        assert [c.header for c in table.columns] == ["Pair", "Date", "Candle", "Pips", "Broke"]
+        assert [str(c) for c in table.columns[3].cells] == ["+300.0", "-300.0"]

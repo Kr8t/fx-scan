@@ -10,7 +10,7 @@ from typing import Final
 APP_NAME: Final = "FX SCAN"
 VERSION: Final = "1.0.0"
 
-# Watch list: the 7 majors plus the Yen and EUR crosses (18 pairs).
+# Watch list: the 7 majors, the Yen crosses and the European crosses (16 pairs).
 # Edit the groups below - every other module reads PAIRS.
 MAJORS: Final[tuple[str, ...]] = (
     "EURUSD",
@@ -29,15 +29,22 @@ YEN_CROSSES: Final[tuple[str, ...]] = (
     "CADJPY",
     "CHFJPY",
 )
-EUR_CROSSES: Final[tuple[str, ...]] = (
+# Crosses between the European currencies only (EUR, GBP, CHF).
+# EURJPY/GBPJPY/CHFJPY are Yen crosses and are listed once, under YEN_CROSSES.
+EUROPEAN_CROSSES: Final[tuple[str, ...]] = (
     "EURGBP",
-    "EURAUD",
-    "EURNZD",
-    "EURCAD",
     "EURCHF",
+    "GBPCHF",
 )
-PAIRS: Final[tuple[str, ...]] = MAJORS + YEN_CROSSES + EUR_CROSSES
-# EURJPY is both a Yen and a EUR cross; it is listed once, under YEN_CROSSES.
+PAIRS: Final[tuple[str, ...]] = MAJORS + YEN_CROSSES + EUROPEAN_CROSSES
+
+# Output sections: the majors are shown apart from the Yen/European crosses.
+CROSSES: Final[tuple[str, ...]] = YEN_CROSSES + EUROPEAN_CROSSES
+GROUPS: Final[tuple[tuple[str, tuple[str, ...]], ...]] = (
+    ("MAJORS", MAJORS),
+    ("YEN & EUROPEAN CROSSES", CROSSES),
+)
+GROUP_KEYS: Final[dict[str, tuple[str, ...]]] = {"majors": MAJORS, "crosses": CROSSES}
 
 # --- Data ---------------------------------------------------------------
 HISTORY_PERIOD: Final = "3mo"  # how much history yfinance is asked for
@@ -53,6 +60,21 @@ SCHEMA_VERSION: Final = 2
 MIN_BARS: Final = 5  # fewer cached bars than this => cache is unusable
 MIN_BARS_FOR_SIGNAL: Final = 2  # latest bar + previous bar
 
+# --- MetaTrader 5 source -------------------------------------------------
+MT5_DAILY_BARS: Final = 60  # D1 bars requested per pair
+MT5_MIN_INTERVAL: Final = 5  # watch polling floor (seconds); local terminal, no rate limit
+YAHOO_MIN_INTERVAL: Final = 15
+
+# --- Close confirmation ---------------------------------------------------
+# --confirm choices: alert only when a candle of this size CLOSES beyond the level.
+CONFIRM_FRAMES: Final[dict[str, int]] = {"5m": 5, "15m": 15, "30m": 30, "1h": 60, "4h": 240}
+
+
+def confirm_label(minutes: int) -> str:
+    """``15`` -> ``"15m"``, ``60`` -> ``"1h"``."""
+    return next(label for label, value in CONFIRM_FRAMES.items() if value == minutes)
+
+
 # --- Cache freshness ----------------------------------------------------
 # If we already hit the network this recently and still lack the newest
 # completed bar (bank holiday, yfinance lag), do not hammer the API again.
@@ -60,10 +82,14 @@ RETRY_COOLDOWN: Final = timedelta(minutes=30)
 DEFAULT_DB_PATH: Final = Path.home() / ".fx_scan" / "cache.sqlite"
 
 
-def db_path() -> Path:
-    """Cache location; override with the FX_SCAN_DB environment variable."""
+def db_path(source: str = "yahoo") -> Path:
+    """Cache location (override with FX_SCAN_DB). Each data source gets its own file so
+    Yahoo and MT5 candles are never mixed in one cache."""
     override = os.environ.get("FX_SCAN_DB")
-    return Path(override) if override else DEFAULT_DB_PATH
+    base = Path(override) if override else DEFAULT_DB_PATH
+    if source == "yahoo":
+        return base
+    return base.with_name(f"{base.stem}_{source}{base.suffix}")
 
 
 def yahoo_symbol(pair: str) -> str:
